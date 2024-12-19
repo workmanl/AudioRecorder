@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Recorder</title>
+    <style>
+.recorder-container {
+    max-width: 400px;
+    margin: 20px auto;
+    padding: 20px;
+    border-radius: 8px;
+    background: #ffffff;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.controls {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+.controls button {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 4px;
+    background: #2d2d2d;
+    color: white;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+.controls button:hover {
+    background: #404040;
+}
+.controls button:disabled {
+    background: #cccccc;
+    cursor: not-allowed;
+}
+#recordButton.recording {
+    animation: pulse 2s infinite;
+    background: #ff4444;
+}
+@keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.7; }
+    100% { opacity: 1; }
+}
+.status {
+    color: #666;
+    font-size: 0.9em;
+    margin-bottom: 10px;
+}
+#recordings {
+    margin-top: 20px;
+}
+.recording-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+    padding: 10px;
+    background: #f5f5f5;
+    border-radius: 4px;
+}
+.recording-item audio {
+    flex-grow: 1;
+}
+#levelMeter {
+    width: 100%;
+    height: 20px;
+    background: #f0f0f0;
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 15px;
+}
+#levelMeterFill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #4CAF50, #FFC107, #FF5722);
+    transition: width 0.1s ease;
+}
+    </style>
+</head>
+<body>
+    <div class="recorder-container">
+        <div class="controls">
+            <button id="recordButton">Record</button>
+            <button id="stopButton" disabled>Stop</button>
+        </div>
+        <div id="levelMeter">
+            <div id="levelMeterFill"></div>
+        </div>
+        <div class="status" id="status">Ready to record</div>
+        <div id="recordings"></div>
+    </div>
+
+    <script>
+class AudioRecorder {
+    constructor() {
+        this.mediaRecorder = null;
+        this.audioChunks = [];
+        this.recordButton = document.getElementById('recordButton');
+        this.stopButton = document.getElementById('stopButton');
+        this.status = document.getElementById('status');
+        this.recordings = document.getElementById('recordings');
+        this.levelMeterFill = document.getElementById('levelMeterFill');
+        this.audioContext = null;
+        this.analyser = null;
+        this.dataArray = null;
+        this.animationFrame = null;
+        
+        this.setupEventListeners();
+    }
+
+    setupEventListeners() {
+        this.recordButton.addEventListener('click', () => this.startRecording());
+        this.stopButton.addEventListener('click', () => this.stopRecording());
+    }
+
+    async startRecording() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            this.mediaRecorder = new MediaRecorder(stream);
+            this.audioChunks = [];
+
+            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const source = this.audioContext.createMediaStreamSource(stream);
+            this.analyser = this.audioContext.createAnalyser();
+            this.analyser.fftSize = 256;
+            source.connect(this.analyser);
+            this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
+            
+            this.updateLevelMeter();
+
+            this.mediaRecorder.addEventListener('dataavailable', (event) => {
+                this.audioChunks.push(event.data);
+            });
+
+            this.mediaRecorder.addEventListener('stop', () => {
+                const audioBlob = new Blob(this.audioChunks, { type: 'audio/mp3' });
+                this.createAudioElement(audioBlob);
+                stream.getTracks().forEach(track => track.stop());
+                this.stopLevelMeter();
+            });
+
+            this.mediaRecorder.start();
+            this.recordButton.disabled = true;
+            this.stopButton.disabled = false;
+            this.recordButton.classList.add('recording');
+            this.status.textContent = 'Recording...';
+        } catch (error) {
+            console.error('Error accessing microphone:', error);
+            this.status.textContent = 'Error: Could not access microphone';
+        }
+    }
+
+    updateLevelMeter = () => {
+        this.analyser.getByteFrequencyData(this.dataArray);
+        const average = this.dataArray.reduce((a, b) => a + b) / this.dataArray.length;
+        const level = (average / 256) * 100;
+        this.levelMeterFill.style.width = `${level}%`;
+        this.animationFrame = requestAnimationFrame(this.updateLevelMeter);
+    }
+
+    stopLevelMeter() {
+        if (this.animationFrame) {
+            cancelAnimationFrame(this.animationFrame);
+        }
+        this.levelMeterFill.style.width = '0%';
+        if (this.audioContext) {
+            this.audioContext.close();
+        }
+    }
+
+    stopRecording() {
+        this.mediaRecorder.stop();
+        this.recordButton.disabled = false;
+        this.stopButton.disabled = true;
+        this.recordButton.classList.remove('recording');
+        this.status.textContent = 'Recording stopped';
+    }
+
+    createAudioElement(blob) {
+        const container = document.createElement('div');
+        container.className = 'recording-item';
+
+        const audio = document.createElement('audio');
+        audio.controls = true;
+        audio.src = URL.createObjectURL(blob);
+
+        const downloadButton = document.createElement('button');
+        downloadButton.textContent = 'Download';
+        downloadButton.addEventListener('click', () => {
+            const a = document.createElement('a');
+            a.href = audio.src;
+            a.download = `recording-${new Date().toISOString()}.mp3`;
+            a.click();
+        });
+
+        container.appendChild(audio);
+        container.appendChild(downloadButton);
+        this.recordings.insertBefore(container, this.recordings.firstChild);
+    }
+}
+
+// Initialize the recorder
+window.addEventListener('load', () => {
+    new AudioRecorder();
+});
+    </script>
+</body>
+</html>
