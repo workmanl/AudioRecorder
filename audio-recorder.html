@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Recorder</title>
+    <script src="https://cdn.jsdelivr.net/npm/lamejs@1.2.0/lame.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 400px;
+            margin: 50px auto;
+            padding: 20px;
+            text-align: center;
+        }
+        .controls {
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            font-size: 16px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .record { background: #ff4444; color: white; }
+        .stop { background: #666; color: white; }
+        .record:disabled, .stop:disabled { opacity: 0.5; cursor: not-allowed; }
+        .timer {
+            font-size: 24px;
+            font-weight: bold;
+            margin: 20px 0;
+        }
+        .level-meter {
+            width: 100%;
+            height: 20px;
+            background: #ddd;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 20px 0;
+        }
+        .level-bar {
+            height: 100%;
+            background: linear-gradient(to right, #4CAF50, #FFC107, #FF5722);
+            width: 0%;
+            transition: width 0.1s;
+        }
+    </style>
+</head>
+<body>
+    <h1>Audio Recorder</h1>
+    
+    <div class="controls">
+        <button id="recordBtn" class="record">Record</button>
+        <button id="stopBtn" class="stop" disabled>Stop</button>
+    </div>
+    
+    <div class="timer" id="timer">00:00</div>
+    
+    <div class="level-meter">
+        <div class="level-bar" id="levelBar"></div>
+    </div>
+    
+    <p style="font-size: 12px; color: #666; margin-top: 20px;">Recording will be saved as MP3 to your Downloads folder when stopped.</p>
+
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+        let startTime;
+        let timerInterval;
+        let audioContext;
+        let analyser;
+        let microphone;
+        let dataArray;
+
+        const recordBtn = document.getElementById('recordBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const timer = document.getElementById('timer');
+        const levelBar = document.getElementById('levelBar');
+
+        recordBtn.addEventListener('click', startRecording);
+        stopBtn.addEventListener('click', stopRecording);
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                
+                // Setup audio analysis for level meter
+                audioContext = new AudioContext();
+                analyser = audioContext.createAnalyser();
+                microphone = audioContext.createMediaStreamSource(stream);
+                microphone.connect(analyser);
+                analyser.fftSize = 256;
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+                
+                mediaRecorder.ondataavailable = event => {
+                    audioChunks.push(event.data);
+                };
+                
+                mediaRecorder.onstop = () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                    convertToMp3(audioBlob);
+                    stream.getTracks().forEach(track => track.stop());
+                    audioContext.close();
+                };
+                
+                mediaRecorder.start();
+                startTime = Date.now();
+                
+                recordBtn.disabled = true;
+                stopBtn.disabled = false;
+                
+                timerInterval = setInterval(updateTimer, 1000);
+                requestAnimationFrame(updateLevelMeter);
+                
+            } catch (err) {
+                alert('Error accessing microphone: ' + err.message);
+            }
+        }
+
+        function stopRecording() {
+            mediaRecorder.stop();
+            clearInterval(timerInterval);
+            
+            recordBtn.disabled = false;
+            stopBtn.disabled = true;
+            
+            timer.textContent = '00:00';
+            levelBar.style.width = '0%';
+        }
+
+        function updateTimer() {
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            const minutes = Math.floor(elapsed / 60).toString().padStart(2, '0');
+            const seconds = (elapsed % 60).toString().padStart(2, '0');
+            timer.textContent = `${minutes}:${seconds}`;
+        }
+
+        function updateLevelMeter() {
+            if (analyser) {
+                analyser.getByteFrequencyData(dataArray);
+                const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+                const level = (average / 255) * 100;
+                levelBar.style.width = level + '%';
+                
+                if (mediaRecorder && mediaRecorder.state === 'recording') {
+                    requestAnimationFrame(updateLevelMeter);
+                }
+            }
+        }
+
+        async function convertToMp3(audioBlob) {
+            const arrayBuffer = await audioBlob.arrayBuffer();
+            const audioContext = new AudioContext();
+            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            
+            const samples = audioBuffer.getChannelData(0);
+            const sampleRate = audioBuffer.sampleRate;
+            
+            // Convert float samples to 16-bit PCM
+            const int16Samples = new Int16Array(samples.length);
+            for (let i = 0; i < samples.length; i++) {
+                int16Samples[i] = Math.max(-32768, Math.min(32767, samples[i] * 32768));
+            }
+            
+            const mp3encoder = new lamejs.Mp3Encoder(1, sampleRate, 128);
+            const mp3Data = [];
+            
+            const sampleBlockSize = 1152;
+            for (let i = 0; i < int16Samples.length; i += sampleBlockSize) {
+                const sampleChunk = int16Samples.subarray(i, i + sampleBlockSize);
+                const mp3buf = mp3encoder.encodeBuffer(sampleChunk);
+                if (mp3buf.length > 0) {
+                    mp3Data.push(new Uint8Array(mp3buf));
+                }
+            }
+            
+            const mp3buf = mp3encoder.flush();
+            if (mp3buf.length > 0) {
+                mp3Data.push(new Uint8Array(mp3buf));
+            }
+            
+            const mp3Blob = new Blob(mp3Data, { type: 'audio/mp3' });
+            const url = URL.createObjectURL(mp3Blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `recording_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.mp3`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+    </script>
+</body>
+</html>
